@@ -105,12 +105,11 @@ eat_what list drink
 
 ```
 astrbot_data/
-  plugins/
-    astrbot_plugin_eat_what/
-      assets/
+  data/
+    plugin_data/
+      astrbot_plugin_eat_what/
         foods/*.jpg
         drinks/*.jpg
-      datastore.json
 ```
 
 - 新增条目时会自动保存图片到对应目录  
