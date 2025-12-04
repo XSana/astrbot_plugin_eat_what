@@ -1,0 +1,14 @@
+{
+  "eat_keywords": {
+    "description": "触发“吃什么”模块的关键词列表（为空则不响应）",
+    "type": "list",
+    "hint": "例如：['吃什么', '今晚吃啥', '中午吃点啥']",
+    "default": ["吃什么"]
+  },
+  "drink_keywords": {
+    "description": "触发“喝什么”模块的关键词列表（为空则不响应）",
+    "type": "list",
+    "hint": "例如：['喝什么', '喝点啥', '今晚喝啥']",
+    "default": ["喝什么"]
+  }
+}

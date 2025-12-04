@@ -1,24 +1,189 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
+import random
+from pathlib import Path
+from typing import List, Optional
+
+from PIL import Image as PILImage
+
+import astrbot.api.message_components as Comp
 from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.star import Context, Star, register
+from astrbot.core import AstrBotConfig
+from astrbot.core.message.components import BaseMessageComponent, Image, Reply
+from astrbot.core.star import StarTools
+from astrbot.core.star.filter.permission import PermissionType
+from data.plugins.astrbot_plugin_eat_what.datastore import EatWhatCategory, EatWhatDataStore
 
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
-class MyPlugin(Star):
-    def __init__(self, context: Context):
+
+@register("eat_what", "XSana", "根据吃什么、喝什么关键字随机返回菜品或饮品", "1.0.0")
+class EatWhat(Star):
+    def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
+        self.config = config
 
-    async def initialize(self):
-        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
+        # 初始化
+        self.data_store = EatWhatDataStore(StarTools.get_data_dir())
+        self.food = self.data_store.food
+        self.drink = self.data_store.drink
 
-    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        """这是一个 hello world 指令""" # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_name = event.get_sender_name()
-        message_str = event.message_str # 用户发的纯文本消息字符串
-        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
+        # 关键词
+        self.eat_keywords = self.config.get("eat_keywords") or []
+        self.drink_keywords = self.config.get("drink_keywords") or []
+
+        logger.info(f"eat_keywords: {self.eat_keywords}")
+        logger.info(f"drink_keywords: {self.drink_keywords}")
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def on_keyword_detect(self, event: AstrMessageEvent):
+        message_text = event.message_str or ""
+        if not message_text:
+            return
+
+        for category, keywords in (
+                (self.food, self.eat_keywords),
+                (self.drink, self.drink_keywords)
+        ):
+            if not keywords:
+                continue
+            if self._match_keywords(message_text, keywords):
+                chain = self._build_recommendation_chain(category)
+                if chain is not None:
+                    yield event.chain_result(chain)
+                    event.stop_event()
+                return
+
+    @filter.command_group("eat_what")
+    def eat_what(self):
+        pass
+
+    @eat_what.command("add")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def add(self, event: AstrMessageEvent, type: str, name: str):
+        category = self._get_category(type)
+        if category is None:
+            yield event.plain_result("类型错误，请使用 food 或 drink。")
+        else:
+            images = self._collect_images(
+                getattr(event.message_obj, "message", None)
+            )
+            if not images:
+                yield event.plain_result("添加失败：未检测到图片，请附带或引用一张图片。")
+            elif len(images) > 1:
+                yield event.plain_result("添加失败：目前仅支持一次添加一张图片。")
+            elif name in category.items:
+                yield event.plain_result(f"添加失败：「{name}」已存在")
+            else:
+                image = images[0]
+                image_path = category.dir / f"{name}.jpg"
+                try:
+                    await self._save_image_as_jpg(image, image_path)
+                    category.items.append(name)
+                    yield event.plain_result(f"添加成功：「{name}」")
+                except Exception as e:
+                    logger.error(f"[eat_what] add {image_path} failed: {e}")
+                    yield event.plain_result(f"添加失败：{e}")
+
+        event.stop_event()
+
+    @eat_what.command("del")
+    @filter.permission_type(PermissionType.ADMIN)
+    async def del_(self, event: AstrMessageEvent, type: str, name: str):
+        category = self._get_category(type)
+        if category is None:
+            yield event.plain_result("类型错误，请使用 food 或 drink。")
+        else:
+            image_path = category.dir / f"{name}.jpg"
+
+            if not image_path.exists():
+                yield event.plain_result(f"删除失败：「{name}」不存在")
+            else:
+                try:
+                    image_path.unlink()
+                    if name in category.items:
+                        category.items.remove(name)
+                    yield event.plain_result(f"删除成功：「{name}」")
+                except Exception as e:
+                    logger.error(f"[eat_what] delete {image_path} failed: {e}")
+                    yield event.plain_result(f"删除失败：{e}")
+
+        event.stop_event()
+
+    @eat_what.command("list")
+    async def list(self, event: AstrMessageEvent, type: str):
+        category = self._get_category(type)
+        if category is None:
+            yield event.plain_result("类型错误，请使用 food 或 drink。")
+        else:
+            if type == "food":
+                yield event.plain_result(f"目前有 {len(self.food.items)} 个食物：\n{self.food.items}")
+            else:
+                yield event.plain_result(f"目前有 {len(self.drink.items)} 个饮料：\n{self.drink.items}")
+
+        event.stop_event()
+
+    def _get_category(self, type_: str) -> Optional[EatWhatCategory]:
+        if type_ == "food":
+            return self.food
+        if type_ == "drink":
+            return self.drink
+        return None
+
+    def _build_recommendation_chain(self, category: EatWhatCategory) -> Optional[List[BaseMessageComponent]]:
+        if not category.items:
+            return None
+        name = random.choice(category.items)
+        word = category.word
+        image_path = str(category.dir / f"{name}.jpg")
+
+        return [
+            Comp.Image.fromFileSystem(image_path),
+            Comp.Plain(f"推荐你{word}{name}")
+        ]
+
+    @staticmethod
+    def _match_keywords(text: str, keywords: List[str]) -> Optional[str]:
+        for keyword in keywords:
+            if keyword in text:
+                return keyword
+        return None
+
+    def _collect_images(self, components: List[BaseMessageComponent]) -> List[Image]:
+        images: List[Image] = []
+        if not components:
+            return images
+
+        for comp in components:
+            if isinstance(comp, Image):
+                images.append(comp)
+            elif isinstance(comp, Reply) and comp.chain:
+                images.extend(self._collect_images(comp.chain))
+        return images
+
+    @staticmethod
+    async def _save_image_as_jpg(image_comp: Image, target_path: Path) -> None:
+        src_path = await image_comp.convert_to_file_path()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with PILImage.open(src_path) as im:
+            if im.mode in ("RGBA", "LA") or (
+                    im.mode == "P" and "transparency" in im.info
+            ):
+                im_rgba = im.convert("RGBA")
+                bg = PILImage.new("RGB", im_rgba.size, (255, 255, 255))
+                alpha = im_rgba.split()[-1]  # A 通道
+                bg.paste(im_rgba, mask=alpha)
+                work = bg
+            else:
+                work = im.convert("RGB")
+
+            max_width = 500
+            w, h = work.size
+            if w > max_width:
+                scale = max_width / float(w)
+                new_size = (max_width, int(h * scale))
+                work = work.resize(new_size, PILImage.Resampling.LANCZOS)
+
+            work.save(target_path, format="JPEG", quality=90, optimize=True)
 
     async def terminate(self):
-        """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
+        logger.info("[eat_what] plugin terminated")
