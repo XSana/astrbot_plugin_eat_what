@@ -5,7 +5,7 @@ from typing import List, Optional
 from PIL import Image as PILImage
 
 import astrbot.api.message_components as Comp
-from astrbot.api import logger
+from astrbot.api import logger, llm_tool
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core import AstrBotConfig
@@ -15,7 +15,7 @@ from astrbot.core.star.filter.permission import PermissionType
 from data.plugins.astrbot_plugin_eat_what.datastore import EatWhatCategory, EatWhatDataStore
 
 
-@register("eat_what", "XSana", "根据吃什么、喝什么关键字随机返回菜品或饮品", "1.0.0")
+@register("eat_what", "XSana", "根据吃什么、喝什么关键字随机返回菜品或饮品", "1.1.0")
 class EatWhat(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -51,6 +51,56 @@ class EatWhat(Star):
                     yield event.chain_result(chain)
                     event.stop_event()
                 return
+
+    @llm_tool("eat_what")
+    async def llm_eat_what(self, event: AstrMessageEvent):
+        """
+        Call this tool when the user expresses an intention to ask what they should eat
+        or wants a recommendation for food.
+        Use this tool in situations where the user:
+        1) Explicitly asks what to eat or requests food suggestions, e.g.:
+           - "吃什么？"
+           - "我今天吃什么比较好？"
+           - "推荐一个吃的"
+           - "给我来点吃的"
+        2) Shows clear intent related to wanting food, even without direct keywords,
+           such as expressing difficulty deciding what to eat or asking for ideas.
+
+           Examples:
+           - "我现在好饿，吃啥呢"
+           - "中午完全不知道吃什么"
+           - "有什么好吃的推荐吗"
+        This tool responds with a randomly selected food item from the configured list,
+        returned as a message chain (image and/or text depending on configuration).
+        """
+        chain = self._build_recommendation_chain(self.food)
+        if chain is not None:
+            yield event.chain_result(chain)
+            event.stop_event()
+
+    @llm_tool("drink_what")
+    async def llm_drink_what(self, event: AstrMessageEvent):
+        """
+        Call this tool when the user expresses an intention to ask what they should drink
+        or wants a recommendation for a beverage.
+        Use this tool in situations where the user:
+        1) Explicitly asks what to drink or requests drink suggestions, e.g.:
+           - "喝什么？"
+           - "推荐一个饮料"
+           - "我想喝点东西"
+           - "来点喝的"
+        2) Shows clear intent related to wanting a drink, even without explicit keywords.
+           Examples:
+           - "口渴了，喝啥好"
+           - "不知道喝点什么"
+           - "给我推荐点喝的吧"
+        This tool responds with a randomly selected drink item from the configured list,
+        returned as a message chain (image and/or text depending on configuration).
+        """
+        chain = self._build_recommendation_chain(self.drink)
+        if chain is not None:
+            yield event.chain_result(chain)
+            event.stop_event()
 
     @filter.command_group("eat_what")
     def eat_what(self):
