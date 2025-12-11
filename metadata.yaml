@@ -1,6 +1,6 @@
 name: astrbot_plugin_eat_what
 display_name: 今天吃什么
 desc: 根据吃什么、喝什么关键字随机返回菜品或饮品
-version: v1.1.1
+version: v1.1.2
 author: XSana
 repo: https://github.com/XSana/astrbot_plugin_eat_what
